@@ -1,73 +1,45 @@
-// index.js
 require("dotenv").config();
-
 
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
-const { Configuration, OpenAIApi } = require("openai");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors()); // Possibly restricted to your Bubble domain for security
+app.use(cors()); // Consider restricting this to your Bubble domain for security
 
-// Store your OpenAI API key as an environment variable.
-const configuration = new Configuration({
+// Initialize OpenAI client with the API key from environment variables
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-const openai = new OpenAIApi(configuration);
 
 // SSE Endpoint
 app.post("/stream", async (req, res) => {
   try {
-    // For example, the prompt or chat messages come in from the body
     const { messages } = req.body;
 
+    // Set headers for Server-Sent Events (SSE)
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // Make the call to OpenAI with stream enabled
-    const completion = await openai.createChatCompletion(
-      {
-        model: "gpt-3.5-turbo",
-        messages: messages,
-        stream: true,
-      },
-      { responseType: "stream" }
-    );
-
-    completion.data.on("data", (chunk) => {
-      const payloads = chunk
-        .toString()
-        .split("\n")
-        .filter((line) => line.trim() !== "" && line.includes("data:"));
-
-      for (const payload of payloads) {
-        const data = payload.replace(/^data: /, "");
-        if (data === "[DONE]") {
-          // Let the client know we're done
-          res.write(`event: done\ndata: [DONE]\n\n`);
-          res.end();
-          return;
-        }
-        try {
-          const parsed = JSON.parse(data);
-          const text = parsed.choices?.[0]?.delta?.content || "";
-          // Send the text chunk as an SSE event
-          res.write(`event: chunk\ndata: ${JSON.stringify({ text })}\n\n`);
-        } catch (error) {
-          console.error("JSON parse error:", error, data);
-        }
-      }
+    // Call OpenAI with streaming enabled
+    const stream = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: messages,
+      stream: true,
     });
 
-    // In case of error
-    completion.data.on("error", (err) => {
-      console.error("OpenAI Stream Error:", err);
-      res.write(`event: error\ndata: ${JSON.stringify(err?.message)}\n\n`);
-      res.end();
-    });
+    // Stream the response data
+    for await (const part of stream) {
+      const text = part.choices[0]?.delta?.content || "";
+      res.write(`event: chunk\ndata: ${JSON.stringify({ text })}\n\n`);
+    }
+
+    // Indicate the end of the stream
+    res.write(`event: done\ndata: [DONE]\n\n`);
+    res.end();
   } catch (error) {
     console.error("Request Error:", error);
     res.status(500).send(error?.message || "Something went wrong");
